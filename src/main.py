@@ -11,7 +11,7 @@ from geo import get_countries, decorate, _extract_host, _has_flag_emoji
 
 HERE = os.path.dirname(__file__)
 OUT_DIR = os.path.abspath(os.path.join(HERE, "..", "output"))
-TOP_N = 100
+TOP_N = 150
 OUT_FILE = "proxies.txt"          # <-- ЕДИНСТВЕННЫЙ файл с результатом
 
 
