@@ -71,11 +71,12 @@ def link_to_outbound(link: str):
                     "vnext": [{
                         "address": u.hostname,
                         "port": int(u.port),
-                        "users": [{
-                            "id": u.username,
-                            "encryption": "none",
-                            "flow": q.get("flow", ""),
-                        }],
+                        user = {"id": u.username, "encryption": "none"}
+                        if q.get("flow"):
+                        user["flow"] = q["flow"]
+                                            
+                      
+                      
                     }]
                 },
                 "streamSettings": _stream_settings(
