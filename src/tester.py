@@ -1,21 +1,74 @@
-import json, os, socket, subprocess, tempfile, time
+import json, os, socket, statistics, subprocess, tempfile, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import requests
+
 from parser import link_to_outbound
 from sources import TEST_URL
 
 XRAY_BIN = os.environ.get("XRAY_BIN", "./xray")
-TIMEOUT = 8            # сек на весь тест конфига
-MAX_WORKERS = 60       # параллельных xray-процессов
+
+# --- Основные настройки ---
+TIMEOUT = 8                 # сек на одну попытку curl
+MAX_WORKERS = 60            # параллельных xray-процессов
+REPEAT_TESTS = 3            # сколько раз повторять тест скорости
+PAUSE_BETWEEN_TESTS = 1.0   # пауза между повторами (сек)
+MAX_STDEV_RATIO = 0.4       # макс. допустимый разброс скорости (40% от средней)
+
+# --- Проверка обхода блокировок РФ ---
+# Если сайт не открывается через прокси — значит конфиг не годится для России.
+BLOCKED_URL = "https://x.com" 
+BLOCKED_TIMEOUT = 6
 
 
-def _free_port() -> int:
+def _free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
-def _test_one(link: str):
+def _run_speed_test(port):
+    """Один замер скорости через YouTube CDN."""
+    try:
+        result = subprocess.run(
+            [
+                "curl", "-x", f"socks5h://127.0.0.1:{port}",
+                "-o", "/dev/null", "-s",
+                "-w", "%{http_code} %{time_total} %{speed_download}",
+                "--max-time", str(TIMEOUT),
+                TEST_URL,
+            ],
+            capture_output=True, text=True, timeout=TIMEOUT + 2,
+        )
+        parts = result.stdout.strip().split()
+        if len(parts) != 3:
+            return None
+        code, t_total, speed = parts[0], float(parts[1]), float(parts[2])
+        if code != "200" or speed < 1024:      # минимум 1 KB/s
+            return None
+        return {"latency": t_total, "speed_kbps": speed / 1024}
+    except Exception:
+        return None
+
+
+def _run_blocked_test(port):
+    """Проверяет, открывается ли через прокси сайт, заблокированный в РФ."""
+    try:
+        result = subprocess.run(
+            [
+                "curl", "-x", f"socks5h://127.0.0.1:{port}",
+                "-o", "/dev/null", "-s",
+                "-w", "%{http_code}",
+                "--max-time", str(BLOCKED_TIMEOUT),
+                BLOCKED_URL,
+            ],
+            capture_output=True, text=True, timeout=BLOCKED_TIMEOUT + 2,
+        )
+        code = result.stdout.strip()
+        return code in ("200", "301", "302")
+    except Exception:
+        return False
+
+
+def _test_one(link):
     outbound = link_to_outbound(link)
     if not outbound:
         return None
@@ -40,50 +93,50 @@ def _test_one(link: str):
         [XRAY_BIN, "run", "-c", cfg_path],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
+
     try:
-        time.sleep(0.4)  # дать xray подняться
-        result = subprocess.run(
-              [
-                "curl", "-x", f"socks5h://127.0.0.1:{port}",
-                "-o", "/dev/null", "-s",
-                "-w", "%{http_code} %{time_total} %{speed_download}",
-                "--max-time", str(TIMEOUT),
-                TEST_URL,
-            ],
-            capture_output=True, text=True, timeout=TIMEOUT + 2,
-        )
-        parts = result.stdout.strip().split()
-        if len(parts) != 3:
-            return None
-        code, t_total, speed = parts[0], float(parts[1]), float(parts[2])
-        if code != "200" or speed < 1024:  # минимум 1 KB/s
+        time.sleep(0.4)   # дать xray подняться
+
+        # --- 1. Мульти-тест скорости (REPEAT_TESTS раз) ---
+        speeds, latencies = [], []
+        for i in range(REPEAT_TESTS):
+            if i > 0:
+                time.sleep(PAUSE_BETWEEN_TESTS)
+            res = _run_speed_test(port)
+            if res:
+                speeds.append(res["speed_kbps"])
+                latencies.append(res["latency"])
+
+        # Если хоть один прогон провалился — конфиг нестабилен, отбрасываем
+        if len(speeds) < REPEAT_TESTS:
             return None
 
-        # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: доступ к сайту, который блокируется в РФ
-        # (например, Facebook или Twitter)
-        result_blocked = subprocess.run(
-            [
-                "curl", "-x", f"socks5h://127.0.0.1:{port}",
-                "-o", "/dev/null", "-s",
-                "-w", "%{http_code}",
-                "--max-time", "5",
-                "https://www.facebook.com",  # Или https://twitter.com
-            ],
-            capture_output=True, text=True, timeout=7,
-        )
-        blocked_code = result_blocked.stdout.strip()
-        # Если сайт не открылся (код не 200/301/302), конфиг, скорее всего, не обходит блокировки
-        if blocked_code not in ("200", "301", "302"):
-            print(f"   - Пропущен (не обходит блокировку РФ): {link[:50]}...")
+        avg_speed = statistics.mean(speeds)
+        avg_latency = statistics.mean(latencies)
+        stdev = statistics.stdev(speeds) if len(speeds) > 1 else 0.0
+
+        # --- 2. Проверка стабильности: разброс скорости не больше 40% ---
+        if avg_speed > 0 and (stdev / avg_speed) > MAX_STDEV_RATIO:
             return None
+
+        # --- 3. Проверка обхода блокировок РФ ---
+        if not _run_blocked_test(port):
+            return None
+
+        # Итоговый балл: чем выше — тем лучше.
+        # avg_speed с штрафом за нестабильность (stdev).
+        stability_score = round(avg_speed / (1 + stdev), 1)
 
         return {
             "link": link,
-            "latency": round(t_total, 3),
-            "speed_kbps": round(speed / 1024, 1),
+            "latency": round(avg_latency, 3),
+            "speed_kbps": round(avg_speed, 1),
+            "stability_score": stability_score,
         }
+
     except Exception:
         return None
+
     finally:
         proc.terminate()
         try:
@@ -97,10 +150,11 @@ def _test_one(link: str):
 
 
 def test_many(links):
-    """Прогоняет все конфиги параллельно, возвращает только рабочие."""
+    """Прогоняет все конфиги параллельно, возвращает только прошедшие все проверки."""
     working = []
     total = len(links)
     done = 0
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(_test_one, l): l for l in links}
         for fut in as_completed(futures):
@@ -108,7 +162,8 @@ def test_many(links):
             r = fut.result()
             if r:
                 working.append(r)
-                print(f"[{done}/{total}] OK  {r['latency']}s  {r['speed_kbps']} KB/s")
+                print(f"[{done}/{total}] OK  {r['latency']}s  "
+                      f"{r['speed_kbps']} KB/s  (stab: {r['stability_score']})")
             elif done % 25 == 0:
                 print(f"[{done}/{total}] ...")
     return working
