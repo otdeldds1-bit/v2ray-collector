@@ -1,4 +1,4 @@
-import json, os, socket, statistics, subprocess, tempfile, time
+import json, os, socket, statistics, subprocess, tempfile, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 import base64
@@ -9,29 +9,59 @@ from sources import TEST_URL
 
 XRAY_BIN = os.environ.get("XRAY_BIN", "./xray")
 
-# --- Ослабленные пороги (для диагностики) ---
+# --- Тайминги ---
 TCP_TIMEOUT = 2.0
-SPEED_TIMEOUT = 6
-PAUSE_BETWEEN_TESTS = 0.3
-MAX_WORKERS = 100
+SPEED_TIMEOUT = 8
+BLOCKED_TIMEOUT = 4
+PAUSE_BETWEEN_TESTS = 0.5
+XRAY_READY_TIMEOUT = 3.0     # сколько ждём, пока xray откроет SOCKS-порт
+XRAY_READY_POLL = 0.1
+
+# --- Параллелизм ---
+MAX_WORKERS = 60             # 100 → 60, меньше коллизий
 REPEAT_TESTS = 2
-MAX_STDEV_RATIO = 0.8          # было 0.5 — теперь мягче
-MIN_SPEED_KBPS = 200           # было 800 — теперь 200 KB/s
+MAX_STDEV_RATIO = 0.9        # мягче, чтобы не отсеивать «нормальные»
+MIN_SPEED_KBPS = 50          # 200 → 50, нам нужны хотя бы какие-то рабочие
+
 GLOBAL_DEADLINE_SEC = 25 * 60
 
-# --- Facebook отключён как обязательный фильтр ---
-CHECK_FACEBOOK = False         # <-- включим позже, когда убедимся, что список не пустой
+# --- Опциональная проверка обхода РФ (выключена для диагностики) ---
+CHECK_FACEBOOK = False
 BLOCKED_URL = "https://www.facebook.com"
-BLOCKED_TIMEOUT = 4
 
-# Глобальный счётчик причин отбраковки
+# --- Диагностика ---
+DEBUG_LOG_LIMIT = 15         # сколько первых ошибок xray залогировать
 REJECT = Counter()
+REJECT_SAMPLES = []          # (link, err_snippet)
+_debug_lock = threading.Lock()
+
+# --- Пул портов (thread-safe, без коллизий) ---
+_port_lock = threading.Lock()
+_used_ports = set()
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    with _port_lock:
+        for _ in range(200):
+            with socket.socket() as s:
+                s.bind(("127.0.0.1", 0))
+                p = s.getsockname()[1]
+            if p not in _used_ports:
+                _used_ports.add(p)
+                return p
+        raise RuntimeError("no free ports")
+
+
+def _port_ready(port, timeout=XRAY_READY_TIMEOUT):
+    """Ждём, пока xray реально откроет SOCKS-порт."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                return True
+        except OSError:
+            time.sleep(XRAY_READY_POLL)
+    return False
 
 
 def _extract_host_port(link):
@@ -68,11 +98,11 @@ def _run_speed_test(port):
                 "--max-time", str(SPEED_TIMEOUT),
                 TEST_URL,
             ],
-            capture_output=True, text=True, timeout=SPEED_TIMEOUT + 1,
+            capture_output=True, text=True, timeout=SPEED_TIMEOUT + 2,
         )
         parts = result.stdout.strip().split()
         if len(parts) != 3:
-            return None, "bad_output"
+            return None, f"bad_output:{result.stdout.strip()[:30]}"
         code, t_total, speed = parts[0], float(parts[1]), float(parts[2])
         speed_kbps = speed / 1024
         if code != "200":
@@ -82,8 +112,8 @@ def _run_speed_test(port):
         return {"latency": t_total, "speed_kbps": speed_kbps}, None
     except subprocess.TimeoutExpired:
         return None, "timeout"
-    except Exception:
-        return None, "exception"
+    except Exception as e:
+        return None, f"exc:{type(e).__name__}"
 
 
 def _run_blocked_test(port):
@@ -104,6 +134,20 @@ def _run_blocked_test(port):
         return False
 
 
+def _save_debug(link, err_text, cfg_json):
+    """Сохраняем первые N ошибок xray, чтобы понять, что не так."""
+    global REJECT_SAMPLES
+    with _debug_lock:
+        if len(REJECT_SAMPLES) >= DEBUG_LOG_LIMIT:
+            return
+        err_snippet = (err_text or "").strip().splitlines()[-3:]
+        REJECT_SAMPLES.append({
+            "link": link[:90],
+            "err": " | ".join(err_snippet)[:400],
+            "cfg": cfg_json[:400],
+        })
+
+
 def _test_one(link):
     outbound = link_to_outbound(link)
     if not outbound:
@@ -112,7 +156,7 @@ def _test_one(link):
 
     port = _free_port()
     cfg = {
-        "log": {"loglevel": "none"},
+        "log": {"loglevel": "warning"},
         "inbounds": [{
             "port": port, "listen": "127.0.0.1",
             "protocol": "socks",
@@ -120,27 +164,50 @@ def _test_one(link):
         }],
         "outbounds": [outbound],
     }
+    cfg_json = json.dumps(cfg, ensure_ascii=False)
 
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump(cfg, f)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+        f.write(cfg_json)
         cfg_path = f.name
+    err_path = cfg_path + ".err"
 
     proc = subprocess.Popen(
         [XRAY_BIN, "run", "-c", cfg_path],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=open(err_path, "w"),
     )
-    try:
-        time.sleep(0.3)
 
+    try:
+        # Ждём, пока xray откроет SOCKS-порт
+        if not _port_ready(port):
+            err_text = ""
+            try:
+                with open(err_path) as ef:
+                    err_text = ef.read()
+            except Exception:
+                pass
+            _save_debug(link, err_text, cfg_json)
+            REJECT["xray_not_ready"] += 1
+            return None
+
+        # --- Тест №1 ---
         res1, err1 = _run_speed_test(port)
         if not res1:
             REJECT[f"test1:{err1}"] += 1
+            if err1 == "http_000":
+                try:
+                    with open(err_path) as ef:
+                        _save_debug(link, ef.read(), cfg_json)
+                except Exception:
+                    pass
             return None
 
+        # --- Facebook (выключен для диагностики) ---
         if CHECK_FACEBOOK and not _run_blocked_test(port):
             REJECT["facebook_blocked"] += 1
             return None
 
+        # --- Тест №2 ---
         time.sleep(PAUSE_BETWEEN_TESTS)
         res2, err2 = _run_speed_test(port)
         if not res2:
@@ -157,26 +224,23 @@ def _test_one(link):
             REJECT["unstable"] += 1
             return None
 
-        stability_score = round(avg_speed / (1 + stdev), 1)
         return {
             "link": link,
             "latency": round(avg_latency, 3),
             "speed_kbps": round(avg_speed, 1),
-            "stability_score": stability_score,
+            "stability_score": round(avg_speed / (1 + stdev), 1),
         }
-    except Exception as e:
-        REJECT[f"outer:{type(e).__name__}"] += 1
-        return None
     finally:
         proc.terminate()
         try:
             proc.wait(timeout=1)
         except Exception:
             proc.kill()
-        try:
-            os.unlink(cfg_path)
-        except OSError:
-            pass
+        for p in (cfg_path, err_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 def _stage1_tcp(links):
@@ -219,9 +283,10 @@ def test_many(links):
                 working.append(r)
                 print(f"[{done}/{total}] OK  {r['latency']}s  "
                       f"{r['speed_kbps']} KB/s  (stab: {r['stability_score']})")
-            elif done % 50 == 0:
+            elif done % 100 == 0:
                 elapsed = time.time() - t_start
-                print(f"[{done}/{total}] ...  прошло {elapsed:.0f}с, живых: {len(working)}")
+                print(f"[{done}/{total}] ...  {elapsed:.0f}с, живых: {len(working)}, "
+                      f"топ-причины: {dict(REJECT.most_common(3))}")
 
             if time.time() - t_start > GLOBAL_DEADLINE_SEC:
                 print(f"!!! Дедлайн {GLOBAL_DEADLINE_SEC}с достигнут")
@@ -232,6 +297,13 @@ def test_many(links):
     print("\n=== Причины отбраковки на этапе 2 ===")
     for reason, count in REJECT.most_common():
         print(f"  {reason}: {count}")
-    print(f"=== Итого рабочих: {len(working)} ===")
 
+    if REJECT_SAMPLES:
+        print("\n=== Первые ошибки xray (для диагностики) ===")
+        for i, s in enumerate(REJECT_SAMPLES, 1):
+            print(f"\n[{i}] {s['link']}")
+            print(f"    xray stderr: {s['err']}")
+            print(f"    cfg: {s['cfg']}")
+
+    print(f"\n=== Итого рабочих: {len(working)} ===")
     return working
