@@ -13,7 +13,7 @@ TOP_N = 150                     # сколько конфигов попадёт
 OUT_FILE = "proxies.txt"        # единственный файл с результатом
 
 # --- Фильтр по протоколу и лимит пула ---
-ONLY_PROTOCOL = "vless://"      # берём ТОЛЬКО VLESS, остальное отбрасываем сразу
+ALLOWED_PROTOCOLS = ("vless://", "vmess://")   # VLESS + VMess, остальное отбрасываем
 MAX_POOL = 5000                 # максимум конфигов, которые пойдут на тест
 RANDOM_SEED = 42                # фиксированный seed — список стабилен от запуска к запуску
 
@@ -36,35 +36,34 @@ def fetch_all():
 
 def filter_and_dedupe(links):
     """
-    1. Оставляем только VLESS (всё остальное — VMess/SS/Trojan — отбрасываем).
+    1. Оставляем только VLESS и VMess (Trojan/SS отбрасываем).
     2. Уникализация по (protocol + host + port + uuid) без учёта #fragment.
     3. Ограничиваем пул до MAX_POOL конфигов (перемешав для разнообразия).
     """
-    # --- Шаг 1: только VLESS ---
-    vless = [l for l in links if l.startswith(ONLY_PROTOCOL)]
-    print(f"VLESS-ссылок: {len(vless)} (отброшено не-VLESS: {len(links) - len(vless)})")
+    # --- Шаг 1: только разрешённые протоколы ---
+    kept = [l for l in links if l.startswith(ALLOWED_PROTOCOLS)]
+    print(f"VLESS+VMess-ссылок: {len(kept)} (отброшено остальных: {len(links) - len(kept)})")
 
     # --- Шаг 2: дедупликация ---
     seen, unique = set(), []
-    for l in vless:
+    for l in kept:
         base = l.split("#", 1)[0].strip()
         if not base or base in seen:
             continue
-        if not link_to_outbound(l):   # отсеиваем невалидные
+        if not link_to_outbound(l):
             continue
         seen.add(base)
         unique.append(l)
-    print(f"Уникальных валидных VLESS: {len(unique)}")
+    print(f"Уникальных валидных: {len(unique)}")
 
     # --- Шаг 3: ограничение до MAX_POOL ---
     if len(unique) > MAX_POOL:
         random.seed(RANDOM_SEED)
         random.shuffle(unique)
         unique = unique[:MAX_POOL]
-        print(f"Ограничил пул до {MAX_POOL} VLESS для скорости теста")
+        print(f"Ограничил пул до {MAX_POOL} конфигов для скорости теста")
 
     return unique
-
 
 def write_single_output(working):
     # Чистим output/, чтобы там был ровно один файл
