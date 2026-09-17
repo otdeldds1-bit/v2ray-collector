@@ -11,17 +11,17 @@ XRAY_BIN = os.environ.get("XRAY_BIN", "./xray")
 
 # --- Тайминги ---
 TCP_TIMEOUT = 2.0
-SPEED_TIMEOUT = 8
+SPEED_TIMEOUT = 10
 BLOCKED_TIMEOUT = 4
 PAUSE_BETWEEN_TESTS = 0.5
-XRAY_READY_TIMEOUT = 3.0     # сколько ждём, пока xray откроет SOCKS-порт
+XRAY_READY_TIMEOUT = 5.0     # сколько ждём, пока xray откроет SOCKS-порт
 XRAY_READY_POLL = 0.1
 
 # --- Параллелизм ---
-MAX_WORKERS = 60             # 100 → 60, меньше коллизий
-REPEAT_TESTS = 2
+MAX_WORKERS = 30             # 100 → 60, меньше коллизий
+REPEAT_TESTS = 3
 MAX_STDEV_RATIO = 0.7        # мягче, чтобы не отсеивать «нормальные»
-MIN_SPEED_KBPS = 200          # 200 → 50, нам нужны хотя бы какие-то рабочие
+MIN_SPEED_KBPS = 150          # 200 → 50, нам нужны хотя бы какие-то рабочие
 
 GLOBAL_DEADLINE_SEC = 25 * 60
 
