@@ -1,14 +1,15 @@
-import base64, os, sys, time
-from concurrent.futures import ThreadPoolExecutor
-import requests
-
+import os, sys, time, json, shutil
 sys.path.insert(0, os.path.dirname(__file__))
+
+import requests
 from sources import SOURCES
 from parser import parse_subscription, link_to_outbound
 from tester import test_many
 
-OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "output")
+HERE = os.path.dirname(__file__)
+OUT_DIR = os.path.abspath(os.path.join(HERE, "..", "output"))
 TOP_N = 100
+OUT_FILE = "proxies.txt"          # <-- ЕДИНСТВЕННЫЙ файл с результатом
 
 
 def fetch_all():
@@ -27,49 +28,37 @@ def fetch_all():
 
 
 def dedupe(links):
+    """
+    Уникализация по (protocol+host+port+uuid/pass) БЕЗ учёта #fragment,
+    чтобы дубликаты одного сервера с разными именами не занимали слот.
+    Первый встреченный вариант (с его эмодзи-именем) сохраняется.
+    """
     seen, out = set(), []
     for l in links:
-        # ключ — сам линк без #имени (для стабильности)
-        key = l.split("#", 1)[0]
-        if key in seen:
+        base = l.split("#", 1)[0].strip()
+        if not base or base in seen:
             continue
-        seen.add(key)
-        # отсеиваем то, что не парсится вообще
-        if link_to_outbound(l):
-            out.append(l)
+        if not link_to_outbound(l):
+            continue
+        seen.add(base)
+        out.append(l)   # сохраняем оригинал со всем #fragment
     return out
 
 
-def write_outputs(working):
+def write_single_output(working):
+    # Полностью чистим output/, чтобы там был ровно один файл
+    if os.path.isdir(OUT_DIR):
+        shutil.rmtree(OUT_DIR)
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    # 1. Все рабочие
-    with open(os.path.join(OUT_DIR, "working.txt"), "w") as f:
-        f.write("\n".join(x["link"] for x in working))
-
-    # 2. Топ-100 по скорости
+    # Топ-N по скорости (при равенстве — по меньшей задержке)
     top = sorted(working, key=lambda x: (-x["speed_kbps"], x["latency"]))[:TOP_N]
-    with open(os.path.join(OUT_DIR, "top100.txt"), "w") as f:
-        f.write("\n".join(x["link"] for x in top))
 
-    # 3. Base64-подписки (совместимо с v2rayNG / Nekobox / Streisand)
-    for name, arr in (("working", working), ("top100", top)):
-        payload = "\n".join(x["link"] for x in arr).encode()
-        with open(os.path.join(OUT_DIR, f"{name}_sub.txt"), "wb") as f:
-            f.write(base64.b64encode(payload))
+    path = os.path.join(OUT_DIR, OUT_FILE)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(x["link"] for x in top) + "\n")
 
-    # 4. JSON-отчёт со статистикой
-    import json
-    report = {
-        "updated": int(time.time()),
-        "total_working": len(working),
-        "top100": [
-            {"link": x["link"], "latency": x["latency"], "speed_kbps": x["speed_kbps"]}
-            for x in top
-        ],
-    }
-    with open(os.path.join(OUT_DIR, "report.json"), "w") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
+    print(f"\nЗаписано {len(top)} конфигов в {path}")
 
 
 def main():
@@ -84,10 +73,10 @@ def main():
     print("=== 3. Тестирование (YouTube + скорость) ===")
     t0 = time.time()
     working = test_many(links)
-    print(f"Рабочих: {len(working)} (за {time.time()-t0:.1f}s)")
+    print(f"Рабочих: {len(working)}  (за {time.time()-t0:.1f}s)")
 
-    print("=== 4. Запись результатов ===")
-    write_outputs(working)
+    print("=== 4. Запись результата ===")
+    write_single_output(working)
     print("Готово.")
 
 
