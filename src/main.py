@@ -1,10 +1,13 @@
 import os, sys, time, json, shutil
 sys.path.insert(0, os.path.dirname(__file__))
 
+from geo import get_countries, decorate, _extract_host
+
 import requests
 from sources import SOURCES
 from parser import parse_subscription, link_to_outbound
 from tester import test_many
+from geo import get_countries, decorate, _extract_host, _has_flag_emoji
 
 HERE = os.path.dirname(__file__)
 OUT_DIR = os.path.abspath(os.path.join(HERE, "..", "output"))
@@ -46,19 +49,30 @@ def dedupe(links):
 
 
 def write_single_output(working):
-    # Полностью чистим output/, чтобы там был ровно один файл
+    # Чистим output/
     if os.path.isdir(OUT_DIR):
         shutil.rmtree(OUT_DIR)
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    # Топ-N по скорости (при равенстве — по меньшей задержке)
+    # Топ-N по скорости
     top = sorted(working, key=lambda x: (-x["speed_kbps"], x["latency"]))[:TOP_N]
 
+    # Определяем страну по IP — только для топ-N (≤100 запросов)
+    print(f"Определяю страны для {len(top)} серверов...")
+    hosts = list({_extract_host(x["link"]) for x in top})
+    host_map = get_countries(hosts)
+
+    # Декорируем ссылки флагами
+    decorated = [decorate(x["link"], host_map) for x in top]
+
+    # Пишем ОДИН файл
     path = os.path.join(OUT_DIR, OUT_FILE)
     with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(x["link"] for x in top) + "\n")
+        f.write("\n".join(decorated) + "\n")
 
-    print(f"\nЗаписано {len(top)} конфигов в {path}")
+    with_flag = sum(1 for l in decorated if _has_flag_emoji(l.split("#", 1)[-1]))
+    print(f"Записано {len(decorated)} конфигов в {path}")
+    print(f"Из них с эмодзи-флагом: {with_flag}/{len(decorated)}")
 
 
 def main():
