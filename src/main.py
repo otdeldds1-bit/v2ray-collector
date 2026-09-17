@@ -103,14 +103,14 @@ def main():
     raw = fetch_all()
     print(f"Всего линков: {len(raw)}")
 
-    print("=== 2. Фильтр VLESS + дедупликация ===")
+    print("=== 2. Фильтр VLESS+VMess + дедупликация ===")
     links = filter_and_dedupe(raw)
     print(f"К тестированию: {len(links)}")
 
     print("=== 3. Тестирование (YouTube + обход блокировок РФ + стабильность) ===")
     t0 = time.time()
     working = test_many(links)
-    print(f"Рабочих VLESS: {len(working)}  (за {time.time()-t0:.1f}s)")
+    print(f"Рабочих: {len(working)}  (за {time.time()-t0:.1f}s)")
 
     print("=== 4. Запись результата ===")
     write_single_output(working)
