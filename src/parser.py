@@ -63,17 +63,24 @@ def link_to_outbound(link: str):
     """Преобразует share-link в outbound-конфиг xray. None, если не распарсилось."""
     try:
         if link.startswith("vless://"):
-            u = urlparse(link)
-            q = {k: v[0] for k, v in parse_qs(u.query).items()}
-            return {
-                "protocol": "vless",
-                "settings": {
-                    "vnext": [{
-                        "address": u.hostname,
-                        "port": int(u.port),
-                        user = {"id": u.username, "encryption": "none"}
-                        if q.get("flow"):
-                        user["flow"] = q["flow"]
+    u = urlparse(link)
+    q = {k: v[0] for k, v in parse_qs(u.query).items()}
+    user = {"id": u.username, "encryption": "none"}
+    if q.get("flow"):
+        user["flow"] = q["flow"]
+    return {
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": u.hostname,
+                "port": int(u.port),
+                "users": [user],
+            }]
+        },
+        "streamSettings": _stream_settings(
+            q.get("type", "tcp"), q.get("security", "none"), q, q.get("sni")
+        ),
+    }
                                             
                       
                       
