@@ -9,7 +9,12 @@ def _b64(s: str) -> str:
 
 
 def _stream_settings(net, security, params, sni):
+    # type=raw — это новое имя для tcp в Xray
+    if net == "raw":
+        net = "tcp"
+
     ss = {"network": net}
+
     if security == "tls":
         tls = {"serverName": sni or params.get("host", ""), "allowInsecure": False}
         if params.get("fp"):
@@ -18,21 +23,29 @@ def _stream_settings(net, security, params, sni):
             tls["alpn"] = params["alpn"].split(",")
         ss["security"] = "tls"
         ss["tlsSettings"] = tls
+
     elif security == "reality":
-        ss["security"] = "reality"
-        ss["realitySettings"] = {
-            "serverName": sni or "",
+        reality = {
+            "serverName": sni or params.get("host", ""),
             "publicKey": params.get("pbk", ""),
             "shortId": params.get("sid", ""),
             "fingerprint": params.get("fp", "chrome"),
         }
+        if params.get("spx"):
+            reality["spiderX"] = params["spx"]
+        ss["security"] = "reality"
+        ss["realitySettings"] = reality
+
     if net == "ws":
         ss["wsSettings"] = {
             "path": params.get("path", "/"),
             "headers": {"Host": params.get("host", sni or "")},
         }
     elif net == "grpc":
-        ss["grpcSettings"] = {"serviceName": params.get("serviceName", "")}
+        gs = {"serviceName": params.get("serviceName", "")}
+        if params.get("mode") == "multi":
+            gs["multiMode"] = True
+        ss["grpcSettings"] = gs
     elif net == "tcp" and params.get("headerType") == "http":
         ss["tcpSettings"] = {
             "header": {
