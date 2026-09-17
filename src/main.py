@@ -1,4 +1,4 @@
-import os, sys, time, shutil
+import os, sys, time, shutil, random
 sys.path.insert(0, os.path.dirname(__file__))
 
 import requests
@@ -9,11 +9,17 @@ from geo import get_countries, decorate, _extract_host, _has_flag_emoji
 
 HERE = os.path.dirname(__file__)
 OUT_DIR = os.path.abspath(os.path.join(HERE, "..", "output"))
-TOP_N = 150                    # сколько конфигов попадёт в финальный файл
-OUT_FILE = "proxies.txt"       # единственный файл с результатом
+TOP_N = 150                     # сколько конфигов попадёт в финальный файл
+OUT_FILE = "proxies.txt"        # единственный файл с результатом
+
+# --- Фильтр по протоколу и лимит пула ---
+ONLY_PROTOCOL = "vless://"      # берём ТОЛЬКО VLESS, остальное отбрасываем сразу
+MAX_POOL = 2000                 # максимум конфигов, которые пойдут на тест
+RANDOM_SEED = 42                # фиксированный seed — список стабилен от запуска к запуску
 
 
 def fetch_all():
+    """Скачивает все источники и собирает ссылки."""
     all_links = []
     for url in SOURCES:
         try:
@@ -28,21 +34,36 @@ def fetch_all():
     return all_links
 
 
-def dedupe(links):
+def filter_and_dedupe(links):
     """
-    Уникализация по (protocol + host + port + uuid/pass) без учёта #fragment.
-    Первый встреченный вариант (со своим эмодзи-именем) сохраняется.
+    1. Оставляем только VLESS (всё остальное — VMess/SS/Trojan — отбрасываем).
+    2. Уникализация по (protocol + host + port + uuid) без учёта #fragment.
+    3. Ограничиваем пул до MAX_POOL конфигов (перемешав для разнообразия).
     """
-    seen, out = set(), []
-    for l in links:
+    # --- Шаг 1: только VLESS ---
+    vless = [l for l in links if l.startswith(ONLY_PROTOCOL)]
+    print(f"VLESS-ссылок: {len(vless)} (отброшено не-VLESS: {len(links) - len(vless)})")
+
+    # --- Шаг 2: дедупликация ---
+    seen, unique = set(), []
+    for l in vless:
         base = l.split("#", 1)[0].strip()
         if not base or base in seen:
             continue
-        if not link_to_outbound(l):
+        if not link_to_outbound(l):   # отсеиваем невалидные
             continue
         seen.add(base)
-        out.append(l)
-    return out
+        unique.append(l)
+    print(f"Уникальных валидных VLESS: {len(unique)}")
+
+    # --- Шаг 3: ограничение до MAX_POOL ---
+    if len(unique) > MAX_POOL:
+        random.seed(RANDOM_SEED)
+        random.shuffle(unique)
+        unique = unique[:MAX_POOL]
+        print(f"Ограничил пул до {MAX_POOL} VLESS для скорости теста")
+
+    return unique
 
 
 def write_single_output(working):
@@ -83,14 +104,14 @@ def main():
     raw = fetch_all()
     print(f"Всего линков: {len(raw)}")
 
-    print("=== 2. Дедупликация и валидация ===")
-    links = dedupe(raw)
-    print(f"Уникальных валидных: {len(links)}")
+    print("=== 2. Фильтр VLESS + дедупликация ===")
+    links = filter_and_dedupe(raw)
+    print(f"К тестированию: {len(links)}")
 
     print("=== 3. Тестирование (YouTube + обход блокировок РФ + стабильность) ===")
     t0 = time.time()
     working = test_many(links)
-    print(f"Рабочих: {len(working)}  (за {time.time()-t0:.1f}s)")
+    print(f"Рабочих VLESS: {len(working)}  (за {time.time()-t0:.1f}s)")
 
     print("=== 4. Запись результата ===")
     write_single_output(working)
