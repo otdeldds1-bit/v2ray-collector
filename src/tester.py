@@ -21,7 +21,7 @@ XRAY_READY_POLL = 0.1
 MAX_WORKERS = 60             # 100 → 60, меньше коллизий
 REPEAT_TESTS = 2
 MAX_STDEV_RATIO = 0.7        # мягче, чтобы не отсеивать «нормальные»
-MIN_SPEED_KBPS = 300          # 200 → 50, нам нужны хотя бы какие-то рабочие
+MIN_SPEED_KBPS = 200          # 200 → 50, нам нужны хотя бы какие-то рабочие
 
 GLOBAL_DEADLINE_SEC = 25 * 60
 
