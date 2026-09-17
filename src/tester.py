@@ -2,7 +2,7 @@ import json, os, socket, subprocess, tempfile, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from parser import link_to_outbound
-from sources import TEST_URL, TEST_URL_FALLBACK
+from sources import TEST_URL
 
 XRAY_BIN = os.environ.get("XRAY_BIN", "./xray")
 TIMEOUT = 8            # сек на весь тест конфига
