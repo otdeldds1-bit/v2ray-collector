@@ -1,0 +1,50 @@
+name: Update proxy lists
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # каждые 6 часов
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xray-core
+        run: |
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip -q Xray-linux-64.zip xray
+          chmod +x xray
+          ./xray version
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq curl
+          python3 -m pip install --quiet -r requirements.txt
+
+      - name: Run collector
+        env:
+          XRAY_BIN: ${{ github.workspace }}/xray
+        run: python3 src/main.py
+
+      - name: Commit & push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p output
+          git add output/
+          if git diff --quiet --cached; then
+            echo "Нет изменений"
+            exit 0
+          fi
+          git commit -m "chore: update proxies $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
