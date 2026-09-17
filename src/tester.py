@@ -43,7 +43,7 @@ def _test_one(link: str):
     try:
         time.sleep(0.4)  # дать xray подняться
         result = subprocess.run(
-            [
+              [
                 "curl", "-x", f"socks5h://127.0.0.1:{port}",
                 "-o", "/dev/null", "-s",
                 "-w", "%{http_code} %{time_total} %{speed_download}",
@@ -58,6 +58,25 @@ def _test_one(link: str):
         code, t_total, speed = parts[0], float(parts[1]), float(parts[2])
         if code != "200" or speed < 1024:  # минимум 1 KB/s
             return None
+
+        # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: доступ к сайту, который блокируется в РФ
+        # (например, Facebook или Twitter)
+        result_blocked = subprocess.run(
+            [
+                "curl", "-x", f"socks5h://127.0.0.1:{port}",
+                "-o", "/dev/null", "-s",
+                "-w", "%{http_code}",
+                "--max-time", "5",
+                "https://www.facebook.com",  # Или https://twitter.com
+            ],
+            capture_output=True, text=True, timeout=7,
+        )
+        blocked_code = result_blocked.stdout.strip()
+        # Если сайт не открылся (код не 200/301/302), конфиг, скорее всего, не обходит блокировки
+        if blocked_code not in ("200", "301", "302"):
+            print(f"   - Пропущен (не обходит блокировку РФ): {link[:50]}...")
+            return None
+
         return {
             "link": link,
             "latency": round(t_total, 3),
