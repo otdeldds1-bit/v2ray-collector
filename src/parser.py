@@ -1,4 +1,5 @@
-import base64, json
+import base64
+import json
 from urllib.parse import urlparse, parse_qs, unquote
 
 
@@ -9,7 +10,7 @@ def _b64(s: str) -> str:
 
 
 def _stream_settings(net, security, params, sni):
-    # type=raw — это новое имя для tcp в Xray
+    # type=raw — новое имя для tcp в Xray
     if net == "raw":
         net = "tcp"
 
@@ -62,28 +63,20 @@ def _stream_settings(net, security, params, sni):
 def link_to_outbound(link: str):
     """Преобразует share-link в outbound-конфиг xray. None, если не распарсилось."""
     try:
+        # ============ VLESS ============
         if link.startswith("vless://"):
-    u = urlparse(link)
-    q = {k: v[0] for k, v in parse_qs(u.query).items()}
-    user = {"id": u.username, "encryption": "none"}
-    if q.get("flow"):
-        user["flow"] = q["flow"]
-    return {
-        "protocol": "vless",
-        "settings": {
-            "vnext": [{
-                "address": u.hostname,
-                "port": int(u.port),
-                "users": [user],
-            }]
-        },
-        "streamSettings": _stream_settings(
-            q.get("type", "tcp"), q.get("security", "none"), q, q.get("sni")
-        ),
-    }
-                                            
-                      
-                      
+            u = urlparse(link)
+            q = {k: v[0] for k, v in parse_qs(u.query).items()}
+            user = {"id": u.username, "encryption": "none"}
+            if q.get("flow"):
+                user["flow"] = q["flow"]
+            return {
+                "protocol": "vless",
+                "settings": {
+                    "vnext": [{
+                        "address": u.hostname,
+                        "port": int(u.port),
+                        "users": [user],
                     }]
                 },
                 "streamSettings": _stream_settings(
@@ -91,6 +84,7 @@ def link_to_outbound(link: str):
                 ),
             }
 
+        # ============ TROJAN ============
         if link.startswith("trojan://"):
             u = urlparse(link)
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -108,6 +102,7 @@ def link_to_outbound(link: str):
                 ),
             }
 
+        # ============ VMESS ============
         if link.startswith("vmess://"):
             data = json.loads(_b64(link[8:]))
             net = data.get("net", "tcp")
@@ -135,6 +130,7 @@ def link_to_outbound(link: str):
                 "streamSettings": _stream_settings(net, sec, params, data.get("sni")),
             }
 
+        # ============ SHADOWSOCKS ============
         if link.startswith("ss://"):
             raw = link[5:]
             fragment = ""
@@ -173,7 +169,6 @@ def link_to_outbound(link: str):
 def parse_subscription(text: str):
     """Возвращает список share-link'ов из тела подписки (plain или base64)."""
     text = text.strip()
-    # Если это base64-блок — декодируем
     if "://" not in text[:200]:
         try:
             text = _b64(text)
