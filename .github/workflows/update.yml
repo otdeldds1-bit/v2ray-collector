@@ -1,4 +1,7 @@
       - name: Commit & push
+      concurrency:
+  group: proxy-collector
+  cancel-in-progress: true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
