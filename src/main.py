@@ -1,7 +1,5 @@
-import os, sys, time, json, shutil
+import os, sys, time, shutil
 sys.path.insert(0, os.path.dirname(__file__))
-
-from geo import get_countries, decorate, _extract_host
 
 import requests
 from sources import SOURCES
@@ -11,8 +9,8 @@ from geo import get_countries, decorate, _extract_host, _has_flag_emoji
 
 HERE = os.path.dirname(__file__)
 OUT_DIR = os.path.abspath(os.path.join(HERE, "..", "output"))
-TOP_N = 150
-OUT_FILE = "proxies.txt"          # <-- ЕДИНСТВЕННЫЙ файл с результатом
+TOP_N = 150                    # сколько конфигов попадёт в финальный файл
+OUT_FILE = "proxies.txt"       # единственный файл с результатом
 
 
 def fetch_all():
@@ -32,9 +30,8 @@ def fetch_all():
 
 def dedupe(links):
     """
-    Уникализация по (protocol+host+port+uuid/pass) БЕЗ учёта #fragment,
-    чтобы дубликаты одного сервера с разными именами не занимали слот.
-    Первый встреченный вариант (с его эмодзи-именем) сохраняется.
+    Уникализация по (protocol + host + port + uuid/pass) без учёта #fragment.
+    Первый встреченный вариант (со своим эмодзи-именем) сохраняется.
     """
     seen, out = set(), []
     for l in links:
@@ -44,28 +41,34 @@ def dedupe(links):
         if not link_to_outbound(l):
             continue
         seen.add(base)
-        out.append(l)   # сохраняем оригинал со всем #fragment
+        out.append(l)
     return out
 
 
 def write_single_output(working):
-    # Чистим output/
+    # Чистим output/, чтобы там был ровно один файл
     if os.path.isdir(OUT_DIR):
         shutil.rmtree(OUT_DIR)
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    # Топ-N по скорости
-    top = sorted(working, key=lambda x: (-x["speed_kbps"], x["latency"]))[:TOP_N]
+    # --- Сортировка: сначала по стабильности, потом по скорости, потом по latency ---
+    top = sorted(
+        working,
+        key=lambda x: (
+            -x.get("stability_score", 0),
+            -x.get("speed_kbps", 0),
+            x.get("latency", 999),
+        ),
+    )[:TOP_N]
 
-    # Определяем страну по IP — только для топ-N (≤100 запросов)
+    # --- Добавляем эмодзи-флаги для тех строк, где их нет ---
     print(f"Определяю страны для {len(top)} серверов...")
     hosts = list({_extract_host(x["link"]) for x in top})
     host_map = get_countries(hosts)
 
-    # Декорируем ссылки флагами
     decorated = [decorate(x["link"], host_map) for x in top]
 
-    # Пишем ОДИН файл
+    # --- Пишем единственный файл ---
     path = os.path.join(OUT_DIR, OUT_FILE)
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(decorated) + "\n")
@@ -84,7 +87,7 @@ def main():
     links = dedupe(raw)
     print(f"Уникальных валидных: {len(links)}")
 
-    print("=== 3. Тестирование (YouTube + скорость) ===")
+    print("=== 3. Тестирование (YouTube + обход блокировок РФ + стабильность) ===")
     t0 = time.time()
     working = test_many(links)
     print(f"Рабочих: {len(working)}  (за {time.time()-t0:.1f}s)")
