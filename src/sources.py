@@ -3,6 +3,6 @@
 
 SOURCES = [
   
-    "https://gitlab.com/solovyov-jenya2004/all_subs/-/raw/main/final_sorted?ref_type=heads"
+    "https://gitlab.com/solovyov-jenya2004/all_subs/-/raw/main/final_sorted",
 ]
 TEST_URL = "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
