@@ -4,5 +4,5 @@
 SOURCES = [
   
     "https://gitlab.com/solovyov-jenya2004/all_subs/-/blob/main/final_sorted?ref_type=heads"
-
+]
 TEST_URL = "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
